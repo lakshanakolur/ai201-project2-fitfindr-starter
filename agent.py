@@ -18,6 +18,7 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
 from tools import search_listings, suggest_outfit, create_fit_card
 
 
@@ -92,9 +93,60 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: initialize session
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query with regex to extract description, size, max_price
+    size_match = re.search(r"\bsize\s+([A-Za-z0-9/]+)", query, re.IGNORECASE)
+    price_match = re.search(r"under\s+\$?(\d+(?:\.\d+)?)", query, re.IGNORECASE)
+
+    size = size_match.group(1) if size_match else None
+    max_price = float(price_match.group(1)) if price_match else None
+
+    # Strip size and price tokens from the query to get a clean description
+    description = re.sub(r"\bsize\s+[A-Za-z0-9/]+", "", query, flags=re.IGNORECASE)
+    description = re.sub(r"under\s+\$?\d+(?:\.\d+)?", "", description, flags=re.IGNORECASE)
+    description = re.sub(r"\$\d+(?:\.\d+)?", "", description)
+    description = re.sub(r"\s+", " ", description).strip(" ,.")
+
+    session["parsed"] = {
+        "description": description,
+        "size": size,
+        "max_price": max_price,
+    }
+
+    # Step 3: call search_listings — early exit if nothing matches
+    results = search_listings(description, size, max_price)
+    session["search_results"] = results
+
+    if not results:
+        session["error"] = (
+            "I couldn't find anything matching that"
+            + (f" under ${int(max_price)}" if max_price else "")
+            + " — try broadening your search term or raising your budget."
+        )
+        return session
+
+    # Step 4: select the top result
+    session["selected_item"] = results[0]
+
+    # Step 5: call suggest_outfit — early exit if LLM silently returns empty
+    outfit_suggestion = suggest_outfit(session["selected_item"], session["wardrobe"])
+
+    if not outfit_suggestion or not outfit_suggestion.strip():
+        session["error"] = (
+            "I found the item but couldn't generate outfit ideas — try again in a moment."
+        )
+        return session
+
+    session["outfit_suggestion"] = outfit_suggestion
+
+    # Step 6: call create_fit_card
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7: return completed session
     return session
 
 
@@ -105,12 +157,14 @@ if __name__ == "__main__":
 
     print("=== Happy path: graphic tee ===\n")
     session = run_agent(
-        query="looking for a vintage graphic tee under $30",
+        query="looking for a designer ballown under $5, size XXS",
         wardrobe=get_example_wardrobe(),
     )
     if session["error"]:
         print(f"Error: {session['error']}")
     else:
+        print(f"selected_item: {session['selected_item']}")
+        print(f"\noutfit_suggestion going into fit card: {session['outfit_suggestion']}")
         print(f"Found: {session['selected_item']['title']}")
         print(f"\nOutfit: {session['outfit_suggestion']}")
         print(f"\nFit card: {session['fit_card']}")
